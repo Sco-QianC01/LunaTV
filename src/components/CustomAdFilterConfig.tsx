@@ -41,19 +41,28 @@ const CustomAdFilterConfig = ({ config, refreshConfig }: CustomAdFilterConfigPro
   const handleSave = async () => {
     setIsLoading(true);
     try {
+      if (!config) {
+        throw new Error('配置未加载');
+      }
+
+      // 合并完整的 AdminConfig（参考 MoonTVPlus）
+      const updatedConfig = {
+        ...config,
+        SiteConfig: {
+          ...config.SiteConfig,
+          CustomAdFilterCode: filterSettings.customAdFilterCode,
+          CustomAdFilterVersion: filterSettings.customAdFilterVersion,
+        }
+      };
+
       const response = await fetch('/api/admin/config', {
-        method: 'PUT',
+        method: 'POST',  // 改为 POST
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          SiteConfig: {
-            CustomAdFilterCode: filterSettings.customAdFilterCode,
-            CustomAdFilterVersion: filterSettings.customAdFilterVersion,
-          }
-        })
+        body: JSON.stringify(updatedConfig)  // 发送完整配置
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json().catch(() => ({}));
         throw new Error(error.error || '保存失败');
       }
 
@@ -66,12 +75,55 @@ const CustomAdFilterConfig = ({ config, refreshConfig }: CustomAdFilterConfigPro
     }
   };
 
-  // 重置为默认
+  // 重置输入框（不保存）
   const handleReset = () => {
     setFilterSettings({
       customAdFilterCode: '',
       customAdFilterVersion: 1,
     });
+  };
+
+  // 恢复默认并保存到数据库
+  const handleRestoreDefault = async () => {
+    setIsLoading(true);
+    try {
+      if (!config) {
+        throw new Error('配置未加载');
+      }
+
+      // 合并完整的 AdminConfig，重置自定义去广告配置
+      const updatedConfig = {
+        ...config,
+        SiteConfig: {
+          ...config.SiteConfig,
+          CustomAdFilterCode: '',
+          CustomAdFilterVersion: 1,
+        }
+      };
+
+      const response = await fetch('/api/admin/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedConfig)
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || '恢复默认失败');
+      }
+
+      setFilterSettings({
+        customAdFilterCode: '',
+        customAdFilterVersion: 1,
+      });
+
+      showMessage('success', '已恢复为默认配置');
+      await refreshConfig();
+    } catch (error: any) {
+      showMessage('error', error.message || '恢复默认失败');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // 默认示例代码
@@ -82,41 +134,51 @@ const CustomAdFilterConfig = ({ config, refreshConfig }: CustomAdFilterConfigPro
 function filterAdsFromM3U8(type, m3u8Content) {
   if (!m3u8Content) return '';
 
+  // 广告关键字列表
+  const adKeywords = [
+    'sponsor',
+    '/ad/',
+    '/ads/',
+    'advert',
+    'advertisement',
+    '/adjump',
+    'redtraffic'
+  ];
+
+  // 按行分割M3U8内容
   const lines = m3u8Content.split('\\n');
   const filteredLines = [];
-  let inAdBlock = false;
 
-  for (let i = 0; i < lines.length; i++) {
+  let i = 0;
+  while (i < lines.length) {
     const line = lines[i];
 
-    // 检测广告开始标记
-    if (line.includes('#EXT-X-CUE-OUT') ||
-        line.includes('#EXT-X-DISCONTINUITY')) {
-      inAdBlock = true;
+    // 跳过 #EXT-X-DISCONTINUITY 标识
+    if (line.includes('#EXT-X-DISCONTINUITY')) {
+      i++;
       continue;
     }
 
-    // 检测广告结束标记
-    if (line.includes('#EXT-X-CUE-IN')) {
-      inAdBlock = false;
-      continue;
-    }
+    // 如果是 EXTINF 行，检查下一行 URL 是否包含广告关键字
+    if (line.includes('#EXTINF:')) {
+      // 检查下一行 URL 是否包含广告关键字
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1];
+        const containsAdKeyword = adKeywords.some(keyword =>
+          nextLine.toLowerCase().includes(keyword.toLowerCase())
+        );
 
-    // 跳过广告区块内容
-    if (inAdBlock) {
-      continue;
-    }
-
-    // 针对特定源的自定义规则
-    if (type === 'ruyi') {
-      // 过滤如意源特定时长的广告片段
-      if (line.includes('EXTINF:5.640000') ||
-          line.includes('EXTINF:2.960000')) {
-        continue;
+        if (containsAdKeyword) {
+          // 跳过 EXTINF 行和 URL 行
+          i += 2;
+          continue;
+        }
       }
     }
 
+    // 保留当前行
     filteredLines.push(line);
+    i++;
   }
 
   return filteredLines.join('\\n');
@@ -126,7 +188,7 @@ function filterAdsFromM3U8(type, m3u8Content) {
     <div className='space-y-6'>
       {/* 标题和说明 */}
       <div className='flex items-start gap-3'>
-        <Code className='w-6 h-6 text-purple-500 flex-shrink-0 mt-1' />
+        <Code className='w-6 h-6 text-purple-500 shrink-0 mt-1' />
         <div className='flex-1'>
           <h3 className='text-lg font-semibold text-gray-900 dark:text-gray-100'>
             自定义去广告代码
@@ -140,7 +202,7 @@ function filterAdsFromM3U8(type, m3u8Content) {
       {/* 信息提示 */}
       <div className='bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4'>
         <div className='flex items-start gap-3'>
-          <Info className='w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5' />
+          <Info className='w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5' />
           <div className='text-sm text-blue-800 dark:text-blue-200'>
             <p className='font-medium mb-2'>使用说明：</p>
             <ul className='space-y-1 list-disc list-inside'>
@@ -207,9 +269,9 @@ function filterAdsFromM3U8(type, m3u8Content) {
             : 'bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800'
         }`}>
           {message.type === 'success' ? (
-            <CheckCircle className='w-5 h-5 flex-shrink-0' />
+            <CheckCircle className='w-5 h-5 shrink-0' />
           ) : (
-            <AlertCircle className='w-5 h-5 flex-shrink-0' />
+            <AlertCircle className='w-5 h-5 shrink-0' />
           )}
           <span className='text-sm'>{message.text}</span>
         </div>
@@ -230,6 +292,13 @@ function filterAdsFromM3U8(type, m3u8Content) {
           className='px-4 py-2 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-colors'
         >
           重置
+        </button>
+        <button
+          onClick={handleRestoreDefault}
+          disabled={isLoading}
+          className='px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-orange-400 text-white rounded-lg font-medium transition-colors'
+        >
+          {isLoading ? '恢复中...' : '恢复默认'}
         </button>
       </div>
     </div>

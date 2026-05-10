@@ -5,6 +5,8 @@
 import { Brain, Send, Sparkles, X, Play, ExternalLink } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, useOptimistic, useTransition, useMemo, useCallback, memo } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import {
   addMovieTitleClickListeners,
@@ -17,10 +19,13 @@ import {
   sendAIRecommendMessage,
   MovieRecommendation,
 } from '@/lib/ai-recommend.client';
+import { VideoContext } from '@/lib/ai-orchestrator';
 
 interface AIRecommendModalProps {
   isOpen: boolean;
   onClose: () => void;
+  context?: VideoContext; // 视频上下文（从VideoCard传入）
+  welcomeMessage?: string; // 自定义欢迎消息
 }
 
 interface ExtendedAIMessage extends AIMessage {
@@ -52,14 +57,6 @@ const MessageItem = memo(({
   playingVideoId,
   setPlayingVideoId
 }: MessageItemProps) => {
-  // 使用 useMemo 缓存格式化后的消息内容
-  const formattedContent = useMemo(() => {
-    if (message.role === 'assistant') {
-      return formatAIResponseWithLinks(message.content, handleTitleClick);
-    }
-    return null;
-  }, [message.content, message.role, handleTitleClick]);
-
   return (
     <div
       className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}
@@ -67,15 +64,107 @@ const MessageItem = memo(({
       <div
         className={`max-w-[80%] p-3 rounded-xl shadow-sm ${
           message.role === 'user'
-            ? 'bg-gradient-to-br from-blue-600 to-blue-700 text-white shadow-blue-500/20'
+            ? 'bg-linear-to-br from-blue-600 to-blue-700 text-white shadow-blue-500/20'
             : 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 border border-gray-200/50 dark:border-gray-600/50 shadow-gray-200/50 dark:shadow-gray-900/50'
         } ${message.content === '思考中...' ? 'opacity-70 animate-pulse' : ''}`}
       >
         {message.role === 'assistant' ? (
-          <div
-            dangerouslySetInnerHTML={{ __html: formattedContent || '' }}
-            className="prose prose-sm dark:prose-invert max-w-none"
-          />
+          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-p:leading-relaxed prose-pre:bg-gray-800 prose-pre:text-gray-100 dark:prose-pre:bg-gray-900 prose-code:text-purple-600 dark:prose-code:text-purple-400 prose-code:bg-purple-50 dark:prose-code:bg-purple-900/20 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none prose-a:text-blue-600 dark:prose-a:text-blue-400 prose-strong:text-gray-900 dark:prose-strong:text-white prose-ul:my-2 prose-ol:my-2 prose-li:my-1">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                // 自定义文本渲染，将《片名》转换为可点击链接
+                p: ({node, children, ...props}) => {
+                  const processChildren = (child: any): any => {
+                    if (typeof child === 'string') {
+                      // 匹配《片名》格式并转换为可点击的span
+                      const parts = child.split(/(《[^》]+》)/g);
+                      return parts.map((part, i) => {
+                        const match = part.match(/《([^》]+)》/);
+                        if (match) {
+                          const title = match[1];
+                          return (
+                            <span
+                              key={i}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleTitleClick(title);
+                              }}
+                              className="text-blue-600 dark:text-blue-400 font-medium cursor-pointer hover:underline"
+                            >
+                              {part}
+                            </span>
+                          );
+                        }
+                        return part;
+                      });
+                    }
+                    return child;
+                  };
+
+                  return (
+                    <p {...props}>
+                      {Array.isArray(children)
+                        ? children.map(child => processChildren(child))
+                        : processChildren(children)
+                      }
+                    </p>
+                  );
+                },
+                // 自定义列表项渲染，将《片名》转换为可点击链接
+                li: ({node, children, ...props}) => {
+                  const processChildren = (child: any): any => {
+                    if (typeof child === 'string') {
+                      // 匹配《片名》格式并转换为可点击的span
+                      const parts = child.split(/(《[^》]+》)/g);
+                      return parts.map((part, i) => {
+                        const match = part.match(/《([^》]+)》/);
+                        if (match) {
+                          const title = match[1];
+                          return (
+                            <span
+                              key={i}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleTitleClick(title);
+                              }}
+                              className="text-blue-600 dark:text-blue-400 font-medium cursor-pointer hover:underline"
+                            >
+                              {part}
+                            </span>
+                          );
+                        }
+                        return part;
+                      });
+                    } else if (child?.props?.children) {
+                      // 递归处理嵌套子元素
+                      return {
+                        ...child,
+                        props: {
+                          ...child.props,
+                          children: Array.isArray(child.props.children)
+                            ? child.props.children.map(processChildren)
+                            : processChildren(child.props.children)
+                        }
+                      };
+                    }
+                    return child;
+                  };
+
+                  return (
+                    <li {...props}>
+                      {Array.isArray(children)
+                        ? children.map(child => processChildren(child))
+                        : processChildren(children)
+                      }
+                    </li>
+                  );
+                }
+              }}
+            >
+              {message.content}
+            </ReactMarkdown>
+          </div>
         ) : (
           <div className="whitespace-pre-wrap">{message.content}</div>
         )}
@@ -86,7 +175,7 @@ const MessageItem = memo(({
         <div className="mt-3 space-y-2 max-w-[80%]">
           <div className="text-xs text-gray-500 dark:text-gray-400 mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="bg-gradient-to-br from-blue-100 to-blue-50 dark:from-blue-900 dark:to-blue-950 text-blue-700 dark:text-blue-300 px-2.5 py-1 rounded-full text-xs font-semibold shadow-sm ring-1 ring-blue-200/50 dark:ring-blue-800/50">
+              <span className="bg-linear-to-br from-blue-100 to-blue-50 dark:from-blue-900 dark:to-blue-950 text-blue-700 dark:text-blue-300 px-2.5 py-1 rounded-full text-xs font-semibold shadow-sm ring-1 ring-blue-200/50 dark:ring-blue-800/50">
                 🎬 点击搜索
               </span>
               <span className="font-medium">推荐影片</span>
@@ -109,7 +198,7 @@ const MessageItem = memo(({
                   <img
                     src={movie.poster}
                     alt={movie.title}
-                    className="w-12 h-16 object-cover rounded-lg flex-shrink-0 shadow-md ring-1 ring-gray-200 dark:ring-gray-600"
+                    className="w-12 h-16 object-cover rounded-lg shrink-0 shadow-md ring-1 ring-gray-200 dark:ring-gray-600"
                   />
                 )}
                 <div className="flex-1 min-w-0">
@@ -164,7 +253,7 @@ const MessageItem = memo(({
                   </div>
                   <button
                     onClick={() => setPlayingVideoId(null)}
-                    className="absolute top-2 right-2 bg-black bg-opacity-50 text-white rounded-full p-1 hover:bg-opacity-70 transition-opacity"
+                    className="absolute top-2 right-2 bg-black/50 text-white rounded-full p-1 hover:bg-black/70 transition-opacity"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -177,8 +266,8 @@ const MessageItem = memo(({
                 <div onClick={() => handleYouTubeVideoSelect(video)} className="p-3 cursor-pointer hover:shadow-md hover:border-red-300 dark:hover:border-red-600 transition-all">
                   <div className="flex items-start gap-3">
                     <div className="relative">
-                      <img src={video.thumbnail} alt={video.title} className="w-16 h-12 object-cover rounded flex-shrink-0" />
-                      <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-30 rounded">
+                      <img src={video.thumbnail} alt={video.title} className="w-16 h-12 object-cover rounded shrink-0" />
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded">
                         <div className="bg-red-600 text-white rounded-full p-1">
                           <Play className="w-3 h-3" />
                         </div>
@@ -228,7 +317,7 @@ const MessageItem = memo(({
                       </div>
                       <button
                         onClick={() => setPlayingVideoId(null)}
-                        className="absolute top-2 right-2 bg-black bg-opacity-50 text-white rounded-full p-1 hover:bg-opacity-70 transition-opacity"
+                        className="absolute top-2 right-2 bg-black/50 text-white rounded-full p-1 hover:bg-black/70 transition-opacity"
                       >
                         <X className="w-4 h-4" />
                       </button>
@@ -241,7 +330,7 @@ const MessageItem = memo(({
                           alt={video.title}
                           className="w-20 h-15 object-cover rounded"
                         />
-                        <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-30 rounded">
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded">
                           <div className="bg-red-600 text-white rounded-full p-2">
                             <Play className="w-4 h-4" />
                           </div>
@@ -297,7 +386,7 @@ const MessageItem = memo(({
 
 MessageItem.displayName = 'MessageItem';
 
-export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalProps) {
+export default function AIRecommendModal({ isOpen, onClose, context, welcomeMessage }: AIRecommendModalProps) {
   const router = useRouter();
   const [messages, setMessages] = useState<ExtendedAIMessage[]>([]);
   const [inputMessage, setInputMessage] = useState('');
@@ -308,14 +397,9 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
   const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const scrollTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isSyncingRef = useRef(false); // 🔥 防止循环更新的标志
 
-  // ✨ React 19: useOptimistic for optimistic UI updates
-  const [optimisticMessages, addOptimisticMessage] = useOptimistic(
-    messages,
-    (state, newMessage: ExtendedAIMessage) => [...state, newMessage]
-  );
-
-  // ✨ React 19: useTransition for non-urgent updates
+  // ✨ React 19: useTransition for non-urgent updates (流式聊天不需要useOptimistic)
   const [isPending, startTransition] = useTransition();
 
   // ⚡ 优化：防抖滚动到底部
@@ -324,8 +408,13 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
       clearTimeout(scrollTimerRef.current);
     }
     scrollTimerRef.current = setTimeout(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, 100);
+      // 使用 scrollTop 直接滚动到底部，更可靠
+      if (messagesContainerRef.current) {
+        messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+      }
+      // 备用方案：使用 scrollIntoView
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }, 50); // 减少延迟到 50ms 提高响应速度
   }, []);
 
   // ⚡ 优化：异步保存到 localStorage
@@ -356,6 +445,14 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
               timestamp: existingTimestamp
             };
             localStorage.setItem('ai-recommend-messages', JSON.stringify(cache));
+
+            // 🔥 手动派发 storage 事件，同步同一页面内的其他组件实例
+            window.dispatchEvent(new StorageEvent('storage', {
+              key: 'ai-recommend-messages',
+              newValue: JSON.stringify(cache),
+              url: window.location.href,
+              storageArea: localStorage,
+            }));
           } catch (error) {
             console.error("Failed to save messages to cache", error);
           }
@@ -381,6 +478,14 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
               timestamp: existingTimestamp
             };
             localStorage.setItem('ai-recommend-messages', JSON.stringify(cache));
+
+            // 🔥 手动派发 storage 事件，同步同一页面内的其他组件实例
+            window.dispatchEvent(new StorageEvent('storage', {
+              key: 'ai-recommend-messages',
+              newValue: JSON.stringify(cache),
+              url: window.location.href,
+              storageArea: localStorage,
+            }));
           } catch (error) {
             console.error("Failed to save messages to cache", error);
           }
@@ -415,27 +520,44 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
       if (cachedMessages) {
         const { messages: storedMessages, timestamp } = JSON.parse(cachedMessages);
         const now = new Date().getTime();
-        // 30分钟缓存
-        if (now - timestamp < 30 * 60 * 1000) {
+
+        // 检查缓存是否包含旧格式的欢迎消息（不包含Markdown列表标记）
+        const hasOldFormatWelcome = storedMessages.length > 0 &&
+          storedMessages[0].role === 'assistant' &&
+          storedMessages[0].content.includes('🎬 影视剧推荐 - 推荐电影') &&
+          !storedMessages[0].content.includes('- 🎬');
+
+        // 30分钟缓存，但如果是旧格式则强制刷新
+        if (now - timestamp < 30 * 60 * 1000 && !hasOldFormatWelcome) {
           setMessages(storedMessages.map((msg: ExtendedAIMessage) => ({
             ...msg,
             timestamp: msg.timestamp || new Date().toISOString()
           })));
           return; // 有缓存就不显示欢迎消息
         } else {
-          // 🔥 修复Bug #2: 超过30分钟时真正删除localStorage中的过期数据
-          console.log('AI聊天记录已超过30分钟，自动清除缓存');
+          // 超过30分钟或旧格式时删除缓存
+          console.log(hasOldFormatWelcome ? 'AI欢迎消息格式已更新，清除旧缓存' : 'AI聊天记录已超过30分钟，自动清除缓存');
           localStorage.removeItem('ai-recommend-messages');
         }
       }
 
-      // 没有有效缓存时显示欢迎消息
-      const welcomeMessage: ExtendedAIMessage = {
+      // 没有有效缓存时显示欢迎消息（Markdown格式）
+      const defaultWelcome = context?.title
+        ? `想了解《${context.title}》的更多信息吗？我可以帮你查询剧情、演员、评价等。`
+        : `你好！我是 **AI 智能助手**，支持以下功能：
+
+- 🎬 **影视剧推荐** - 推荐电影、电视剧、动漫等
+- 🔗 **视频链接解析** - 解析 YouTube 链接并播放
+- 📺 **视频内容搜索** - 搜索相关视频内容
+
+💡 **提示**：直接告诉我你想看什么类型的内容，或发送 YouTube 链接给我解析！`;
+
+      const welcomeMsg: ExtendedAIMessage = {
         role: 'assistant',
-        content: '你好！我是AI智能助手，支持以下功能：\n\n🎬 影视剧推荐 - 推荐电影、电视剧、动漫等\n🔗 视频链接解析 - 解析YouTube链接并播放\n📺 视频内容搜索 - 搜索相关视频内容\n\n💡 直接告诉我你想看什么类型的内容，或发送YouTube链接给我解析！',
+        content: welcomeMessage || defaultWelcome,
         timestamp: new Date().toISOString()
       };
-      setMessages([welcomeMessage]);
+      setMessages([welcomeMsg]);
     } catch (error) {
       console.error("Failed to load messages from cache", error);
       // 发生错误时也清除可能损坏的缓存
@@ -443,9 +565,55 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
     }
   }, []);
 
+  // 🔥 监听 storage 事件，同步其他组件实例的更新
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      // 🚫 防止循环：如果正在同步中，忽略此次事件
+      if (isSyncingRef.current) return;
+
+      if (e.key === 'ai-recommend-messages' && e.newValue) {
+        try {
+          const { messages: updatedMessages, timestamp } = JSON.parse(e.newValue);
+          const now = new Date().getTime();
+
+          // 检查缓存是否有效（30分钟内）
+          if (now - timestamp < 30 * 60 * 1000) {
+            console.log('🔄 检测到其他组件实例更新，同步聊天记录');
+
+            // 🔥 设置同步标志，防止触发保存
+            isSyncingRef.current = true;
+
+            setMessages(updatedMessages.map((msg: ExtendedAIMessage) => ({
+              ...msg,
+              timestamp: msg.timestamp || new Date().toISOString()
+            })));
+
+            // 🔥 延迟重置标志，确保保存逻辑不会立即触发
+            setTimeout(() => {
+              isSyncingRef.current = false;
+            }, 500);
+          }
+        } catch (error) {
+          console.error('同步聊天记录失败:', error);
+          isSyncingRef.current = false;
+        }
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
   // ⚡ 优化：保存对话到localStorage并滚动到底部
   useEffect(() => {
     scrollToBottom();
+
+    // 🚫 如果正在同步，跳过保存（避免循环）
+    if (isSyncingRef.current) {
+      console.log('⏭️ 跳过保存（正在同步中）');
+      return;
+    }
+
     saveMessagesToStorage(messages);
   }, [messages, scrollToBottom, saveMessagesToStorage]);
 
@@ -473,7 +641,7 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
     }
   }, []);
 
-  // ✨ Optimized sendMessage with useOptimistic and useTransition
+  // ✨ Optimized sendMessage with useState (不使用useOptimistic，直接更新state以确保流式响应立即显示)
   const sendMessage = async (content: string) => {
     if (!content.trim() || isPending) return;
 
@@ -483,34 +651,124 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
       timestamp: new Date().toISOString(),
     };
 
-    // Optimistically add user message
-    addOptimisticMessage(userMessage);
-    setInputMessage('');
-    setError(null);
-
     // Add a temporary "AI is thinking" message
     const thinkingMessage: ExtendedAIMessage = {
       role: 'assistant',
       content: '思考中...',
       timestamp: new Date().toISOString(),
     };
-    addOptimisticMessage(thinkingMessage);
+
+    setInputMessage('');
+    setError(null);
+
+    // 🔥 立即同步更新state（不使用optimistic，确保用户消息和思考中立即显示）
+    const updatedMessages = [...messages, userMessage];
+    const messagesWithThinking = [...updatedMessages, thinkingMessage];
+    setMessages(messagesWithThinking);
 
     startTransition(async () => {
       try {
-        // Actually add user message to state
-        const updatedMessages = [...messages, userMessage];
-        setMessages(updatedMessages);
-
         // 智能上下文管理：只发送最近8条消息（4轮对话）
         const conversationHistory = updatedMessages.slice(-8);
 
-        const response = await sendAIRecommendMessage(conversationHistory);
+        // 🔥 流式响应：逐字显示AI回复
+        let streamingContent = '';
+        const response = await sendAIRecommendMessage(
+          conversationHistory,
+          context,
+          (chunk: string) => {
+            // 每次接收到chunk，更新消息内容
+            streamingContent += chunk;
+            setMessages((prev) => {
+              const newMessages = [...prev];
+              // 更新最后一条助手消息（"思考中..."）
+              if (newMessages[newMessages.length - 1]?.role === 'assistant') {
+                newMessages[newMessages.length - 1] = {
+                  ...newMessages[newMessages.length - 1],
+                  content: streamingContent,
+                };
+              }
+              return newMessages;
+            });
+          }
+        );
+
+        // 从AI回复中提取推荐影片（用于流式响应）
+        const extractRecommendations = (content: string): MovieRecommendation[] => {
+          const recommendations: MovieRecommendation[] = [];
+          const lines = content.split('\n');
+
+          // 支持多种格式：
+          // 1. 《片名》（2023） - 带中文括号年份
+          // 2. 《片名》 - 不带年份
+          // 3. 1. 类型：《片名》(English Title) - 带类别前缀和英文名
+          // 4. 1. 《片名》 - 数字序号
+
+          // 匹配《》中的内容，允许前面有任意文本（类别、序号等）
+          const titlePattern = /《([^》]+)》/;
+
+          for (let i = 0; i < lines.length; i++) {
+            if (recommendations.length >= 4) break;
+
+            const line = lines[i];
+            const match = line.match(titlePattern);
+
+            if (match) {
+              const title = match[1].trim();
+              let year = '';
+              let genre = '';
+              let description = 'AI推荐内容';
+
+              // 尝试从同一行提取年份（中文括号优先）
+              const yearMatchCN = line.match(/《[^》]+》\s*（(\d{4})）/);
+              const yearMatchEN = line.match(/《[^》]+》\s*\((\d{4})\)/);
+
+              if (yearMatchCN) {
+                year = yearMatchCN[1];
+              } else if (yearMatchEN) {
+                year = yearMatchEN[1];
+              }
+
+              // 尝试从同一行提取类型（在《》之前的部分）
+              const genreMatch = line.match(/(?:\d+\.\s*)?([^：:《]+)[：:]\s*《/);
+              if (genreMatch) {
+                genre = genreMatch[1].trim();
+              }
+
+              // 查找后续行的"类型："或"推荐理由："
+              for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+                const nextLine = lines[j];
+                if (nextLine.includes('类型：') || nextLine.includes('类型:')) {
+                  const extractedGenre = nextLine.split(/类型[：:]/)[1]?.trim();
+                  if (extractedGenre && !genre) {
+                    genre = extractedGenre;
+                  }
+                } else if (nextLine.includes('推荐理由：') || nextLine.includes('推荐理由:') || nextLine.includes('理由：') || nextLine.includes('理由:')) {
+                  description = nextLine.split(/(?:推荐)?理由[：:]/)[1]?.trim() || description;
+                  break;
+                }
+              }
+
+              recommendations.push({
+                title,
+                year,
+                genre,
+                description,
+              });
+            }
+          }
+          return recommendations;
+        };
+
+        // 使用最终内容（streamingContent优先，因为它包含完整的流式内容）
+        const finalContent = streamingContent || response.choices[0].message.content;
+        const extractedRecommendations = extractRecommendations(finalContent);
+
         const assistantMessage: ExtendedAIMessage = {
           role: 'assistant',
-          content: response.choices[0].message.content,
+          content: finalContent,
           timestamp: new Date().toISOString(),
-          recommendations: response.recommendations || [],
+          recommendations: response.recommendations || extractedRecommendations,
           youtubeVideos: response.youtubeVideos || [],
           videoLinks: response.videoLinks || [],
           type: response.type || 'normal',
@@ -573,7 +831,13 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
 
     const welcomeMessage: ExtendedAIMessage = {
       role: 'assistant',
-      content: '你好！我是AI智能助手，支持以下功能：\n\n🎬 影视剧推荐 - 推荐电影、电视剧、动漫等\n🔗 视频链接解析 - 解析YouTube链接并播放\n📺 视频内容搜索 - 搜索相关视频内容\n\n💡 直接告诉我你想看什么类型的内容，或发送YouTube链接给我解析！',
+      content: `你好！我是 **AI 智能助手**，支持以下功能：
+
+- 🎬 **影视剧推荐** - 推荐电影、电视剧、动漫等
+- 🔗 **视频链接解析** - 解析 YouTube 链接并播放
+- 📺 **视频内容搜索** - 搜索相关视频内容
+
+💡 **提示**：直接告诉我你想看什么类型的内容，或发送 YouTube 链接给我解析！`,
       timestamp: new Date().toISOString()
     };
     setMessages([welcomeMessage]);
@@ -593,7 +857,7 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
       {/* 对话框内容容器 - 使用 @container 查询 */}
       <div className="@container relative w-full h-full bg-white dark:bg-gray-900 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
         {/* 头部 - 使用 Tailwind 4.0 改进的渐变 */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-200/50 dark:border-gray-700/50 bg-gradient-to-br from-blue-600 via-purple-600 to-blue-700 shadow-lg">
+        <div className="flex items-center justify-between p-4 border-b border-gray-200/50 dark:border-gray-700/50 bg-linear-to-br from-blue-600 via-purple-600 to-blue-700 shadow-lg">
           <div className="flex items-center space-x-3">
             <div className="p-2 bg-white/20 rounded-xl backdrop-blur-sm ring-1 ring-white/30 shadow-inner">
               <Brain className="h-6 w-6 text-white drop-shadow-md" />
@@ -621,43 +885,93 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
           </div>
         </div>
 
-        {/* 消息区域 - 使用 optimisticMessages */}
+        {/* 消息区域 - 直接使用 messages state */}
         <div
           ref={messagesContainerRef}
-          className="flex-1 overflow-y-auto p-4 space-y-4 bg-gradient-to-b from-gray-50 to-gray-100/50 dark:from-gray-800 dark:to-gray-900/50"
+          className="flex-1 overflow-y-auto p-4 space-y-4 bg-linear-to-b from-gray-50 to-gray-100/50 dark:from-gray-800 dark:to-gray-900/50"
         >
-          {optimisticMessages.length <= 1 && optimisticMessages.every(msg => msg.role === 'assistant' && msg.content.includes('AI智能助手')) && (
+          {messages.length <= 1 && messages.every(msg => msg.role === 'assistant') && (
             <div className="text-center py-8">
-              <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full mb-4">
+              <div className="inline-flex items-center justify-center w-16 h-16 bg-linear-to-br from-blue-500 to-purple-600 rounded-full mb-4">
                 <Sparkles className="h-8 w-8 text-white" />
               </div>
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
-                欢迎使用AI智能助手
+                {context?.title ? `关于《${context.title}》` : '欢迎使用AI智能助手'}
               </h3>
               <p className="text-gray-600 dark:text-gray-400 mb-6">
-                支持影视推荐、YouTube链接解析和视频搜索推荐
+                {context?.title
+                  ? '选择快捷操作或直接输入你的问题'
+                  : '支持影视推荐、YouTube链接解析和视频搜索推荐'
+                }
               </p>
-              
-              {/* 预设问题 */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-2xl mx-auto">
-                {AI_RECOMMEND_PRESETS.map((preset, index) => (
+
+              {/* 快捷操作按钮 - 针对特定影片 */}
+              {context?.title ? (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-w-2xl mx-auto">
                   <button
-                    key={index}
-                    onClick={() => handlePresetClick(preset)}
-                    className="p-3 text-left bg-white dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 hover:border-blue-500 dark:hover:border-blue-400 hover:shadow-md transition-all group"
+                    onClick={() => handlePresetClick({ title: '📖 剧情介绍', message: '这部影片讲了什么故事？请详细介绍一下剧情' })}
+                    className="p-4 text-center bg-white dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600 hover:border-blue-500 dark:hover:border-blue-400 hover:shadow-lg hover:scale-105 transition-all group"
                     disabled={isPending}
                   >
-                    <div className="font-medium text-gray-900 dark:text-gray-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                      {preset.title}
+                    <div className="text-3xl mb-2">📖</div>
+                    <div className="font-semibold text-gray-900 dark:text-gray-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                      剧情介绍
+                    </div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      获取剧情摘要
                     </div>
                   </button>
-                ))}
-              </div>
+
+                  <button
+                    onClick={() => handlePresetClick({ title: '⭐ 影片评价', message: '这部影片评分怎么样？豆瓣和TMDB评分是多少？演员阵容如何？' })}
+                    className="p-4 text-center bg-white dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600 hover:border-yellow-500 dark:hover:border-yellow-400 hover:shadow-lg hover:scale-105 transition-all group"
+                    disabled={isPending}
+                  >
+                    <div className="text-3xl mb-2">⭐</div>
+                    <div className="font-semibold text-gray-900 dark:text-gray-100 group-hover:text-yellow-600 dark:group-hover:text-yellow-400 transition-colors">
+                      影片评价
+                    </div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      查看评分和演员
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => handlePresetClick({ title: '🎬 相似推荐', message: '有没有类似的影片推荐？请推荐5部相似的电影或电视剧' })}
+                    className="p-4 text-center bg-white dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600 hover:border-purple-500 dark:hover:border-purple-400 hover:shadow-lg hover:scale-105 transition-all group"
+                    disabled={isPending}
+                  >
+                    <div className="text-3xl mb-2">🎬</div>
+                    <div className="font-semibold text-gray-900 dark:text-gray-100 group-hover:text-purple-600 dark:group-hover:text-purple-400 transition-colors">
+                      相似推荐
+                    </div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      推荐类似影片
+                    </div>
+                  </button>
+                </div>
+              ) : (
+                /* 通用预设问题 - 全局AI按钮 */
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-2xl mx-auto">
+                  {AI_RECOMMEND_PRESETS.map((preset, index) => (
+                    <button
+                      key={index}
+                      onClick={() => handlePresetClick(preset)}
+                      className="p-3 text-left bg-white dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 hover:border-blue-500 dark:hover:border-blue-400 hover:shadow-md transition-all group"
+                      disabled={isPending}
+                    >
+                      <div className="font-medium text-gray-900 dark:text-gray-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                        {preset.title}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
           {/* ⚡ 优化：使用记忆化的消息组件 */}
-          {optimisticMessages.map((message, index) => (
+          {messages.map((message, index) => (
             <MessageItem
               key={index}
               message={message}
@@ -672,13 +986,13 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
           ))}
 
           {/* 加载状态 - 使用 isPending */}
-          {isPending && optimisticMessages[optimisticMessages.length - 1]?.content !== '思考中...' && (
+          {isPending && messages[messages.length - 1]?.content !== '思考中...' && (
             <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-300">
               <div className="bg-white dark:bg-gray-700 p-3 rounded-xl border border-gray-200/50 dark:border-gray-600/50 shadow-sm">
                 <div className="flex space-x-1.5">
-                  <div className="w-2 h-2 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full animate-bounce shadow-sm"></div>
-                  <div className="w-2 h-2 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full animate-bounce shadow-sm" style={{ animationDelay: '0.15s' }}></div>
-                  <div className="w-2 h-2 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full animate-bounce shadow-sm" style={{ animationDelay: '0.3s' }}></div>
+                  <div className="w-2 h-2 bg-linear-to-br from-blue-500 to-purple-500 rounded-full animate-bounce shadow-sm"></div>
+                  <div className="w-2 h-2 bg-linear-to-br from-blue-500 to-purple-500 rounded-full animate-bounce shadow-sm" style={{ animationDelay: '0.15s' }}></div>
+                  <div className="w-2 h-2 bg-linear-to-br from-blue-500 to-purple-500 rounded-full animate-bounce shadow-sm" style={{ animationDelay: '0.3s' }}></div>
                 </div>
               </div>
             </div>
@@ -686,9 +1000,9 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
 
           {/* 错误提示 - 优化样式 */}
           {error && (
-            <div className="bg-gradient-to-br from-red-50 to-red-100/50 dark:from-red-900/20 dark:to-red-950/30 border border-red-200/50 dark:border-red-800/50 text-red-700 dark:text-red-400 p-4 rounded-xl shadow-lg animate-in fade-in slide-in-from-top-2 duration-300">
+            <div className="bg-linear-to-br from-red-50 to-red-100/50 dark:from-red-900/20 dark:to-red-950/30 border border-red-200/50 dark:border-red-800/50 text-red-700 dark:text-red-400 p-4 rounded-xl shadow-lg animate-in fade-in slide-in-from-top-2 duration-300">
               <div className="flex items-start space-x-3">
-                <div className="flex-shrink-0 p-1">
+                <div className="shrink-0 p-1">
                   <svg className="h-5 w-5 text-red-500 dark:text-red-400" viewBox="0 0 20 20" fill="currentColor">
                     <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
                   </svg>
@@ -727,7 +1041,7 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
                 onChange={(e) => setInputMessage(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="输入影视推荐类型、YouTube搜索内容或直接粘贴YouTube链接..."
-                className="w-full p-3 border border-gray-300/50 dark:border-gray-600/50 rounded-xl bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:bg-white dark:focus:bg-gray-750 resize-none transition-all duration-200 shadow-sm"
+                className="w-full p-3 border border-gray-300/50 dark:border-gray-600/50 rounded-xl bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:bg-gray-50 dark:focus:bg-gray-800 resize-none transition-all duration-200 shadow-sm"
                 rows={2}
                 disabled={isPending}
               />
@@ -735,7 +1049,7 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
             <button
               type="submit"
               disabled={!inputMessage.trim() || isPending}
-              className="px-6 py-3 bg-gradient-to-br from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed text-white rounded-xl font-medium transition-all duration-200 flex items-center space-x-2 shadow-lg shadow-blue-500/30 disabled:shadow-none active:scale-95"
+              className="px-6 py-3 bg-linear-to-br from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed text-white rounded-xl font-medium transition-all duration-200 flex items-center space-x-2 shadow-lg shadow-blue-500/30 disabled:shadow-none active:scale-95"
             >
               <Send className="h-4 w-4" />
               <span>{isPending ? '发送中' : '发送'}</span>

@@ -2,6 +2,25 @@
 
 import { ClientCache } from './client-cache';
 import { DoubanItem, DoubanResult, DoubanCommentsResult } from './types';
+import { getRandomUserAgent, DEFAULT_USER_AGENT } from './user-agent';
+
+// 🔍 调试工具：在浏览器控制台使用
+if (typeof window !== 'undefined') {
+  (window as any).enableDoubanDebug = () => {
+    localStorage.setItem('DOUBAN_DEBUG', '1');
+    console.log('✅ 豆瓣调试模式已启用！页面将跳过缓存，直接获取最新数据。');
+    console.log('💡 刷新页面后生效。使用 disableDoubanDebug() 关闭。');
+  };
+  (window as any).disableDoubanDebug = () => {
+    localStorage.removeItem('DOUBAN_DEBUG');
+    console.log('❌ 豆瓣调试模式已关闭，恢复缓存功能。');
+  };
+  (window as any).checkDoubanDebug = () => {
+    const enabled = localStorage.getItem('DOUBAN_DEBUG') === '1';
+    console.log(`🔍 豆瓣调试模式: ${enabled ? '✅ 已启用' : '❌ 已关闭'}`);
+    return enabled;
+  };
+}
 
 // 豆瓣数据缓存配置（秒）
 const DOUBAN_CACHE_EXPIRE = {
@@ -11,6 +30,9 @@ const DOUBAN_CACHE_EXPIRE = {
   recommends: 2 * 60 * 60, // 推荐2小时
   comments: 1 * 60 * 60,   // 短评1小时（更新频繁）
 };
+
+// 🔄 请求去重：存储正在进行的请求
+const pendingRequests = new Map<string, Promise<any>>();
 
 // 缓存工具函数
 function getCacheKey(prefix: string, params: Record<string, any>): string {
@@ -158,13 +180,13 @@ export function clearDoubanCache(): void {
 // 初始化缓存系统（应该在应用启动时调用）
 export async function initDoubanCache(): Promise<void> {
   if (typeof window === 'undefined') return;
-  
+
   // 立即清理一次过期缓存
   await cleanExpiredCache();
-  
-  // 每10分钟清理一次过期缓存
-  setInterval(() => cleanExpiredCache(), 10 * 60 * 1000);
-  
+
+  // 每1小时清理一次过期缓存
+  setInterval(() => cleanExpiredCache(), 60 * 60 * 1000);
+
   console.log('缓存系统已初始化（豆瓣+Bangumi）');
 }
 
@@ -241,8 +263,7 @@ async function fetchWithTimeout(
   const fetchOptions: RequestInit = {
     signal: controller.signal,
     headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+      'User-Agent': getRandomUserAgent(),
       Referer: 'https://movie.douban.com/',
       Accept: 'application/json, text/plain, */*',
     },
@@ -362,7 +383,7 @@ export async function getDoubanCategories(
   params: DoubanCategoriesParams
 ): Promise<DoubanResult> {
   const { kind, category, type, pageLimit = 20, pageStart = 0 } = params;
-  
+
   // 检查缓存
   const cacheKey = getCacheKey('categories', { kind, category, type, pageLimit, pageStart });
   const cached = await getCache(cacheKey);
@@ -370,9 +391,24 @@ export async function getDoubanCategories(
     console.log(`豆瓣分类缓存命中: ${kind}/${category}/${type}`);
     return cached;
   }
-  
-  const { proxyType, proxyUrl } = getDoubanProxyConfig();
-  let result: DoubanResult;
+
+  // 🔄 请求去重
+  const pendingKey = `categories-${cacheKey}`;
+  if (pendingRequests.has(pendingKey)) {
+    console.log(`豆瓣分类请求去重: ${kind}/${category}/${type}`);
+    return pendingRequests.get(pendingKey)!;
+  }
+
+  const requestPromise = (async () => {
+    // 🕐 超时保护：30秒后自动清理
+    const timeoutId = setTimeout(() => {
+      pendingRequests.delete(pendingKey);
+      console.warn(`豆瓣分类请求超时: ${kind}/${category}/${type}`);
+    }, 30000);
+
+    try {
+      const { proxyType, proxyUrl } = getDoubanProxyConfig();
+      let result: DoubanResult;
   
   switch (proxyType) {
     case 'cors-proxy-zwei':
@@ -401,11 +437,20 @@ export async function getDoubanCategories(
   
   // 保存到缓存
   if (result.code === 200) {
-    await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.categories);
-    console.log(`豆瓣分类已缓存: ${kind}/${category}/${type}`);
+      await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.categories);
+      console.log(`豆瓣分类已缓存: ${kind}/${category}/${type}`);
+    }
+
+    clearTimeout(timeoutId);
+    return result;
+  } finally {
+    clearTimeout(timeoutId);
+    pendingRequests.delete(pendingKey);
   }
-  
-  return result;
+})();
+
+pendingRequests.set(pendingKey, requestPromise);
+return requestPromise;
 }
 
 interface DoubanListParams {
@@ -419,7 +464,7 @@ export async function getDoubanList(
   params: DoubanListParams
 ): Promise<DoubanResult> {
   const { tag, type, pageLimit = 20, pageStart = 0 } = params;
-  
+
   // 检查缓存
   const cacheKey = getCacheKey('lists', { tag, type, pageLimit, pageStart });
   const cached = await getCache(cacheKey);
@@ -427,42 +472,70 @@ export async function getDoubanList(
     console.log(`豆瓣列表缓存命中: ${type}/${tag}/${pageStart}`);
     return cached;
   }
-  
-  const { proxyType, proxyUrl } = getDoubanProxyConfig();
-  let result: DoubanResult;
-  
-  switch (proxyType) {
-    case 'cors-proxy-zwei':
-      result = await fetchDoubanList(params, 'https://ciao-cors.is-an.org/');
-      break;
-    case 'cmliussss-cdn-tencent':
-      result = await fetchDoubanList(params, '', true, false);
-      break;
-    case 'cmliussss-cdn-ali':
-      result = await fetchDoubanList(params, '', false, true);
-      break;
-    case 'cors-anywhere':
-      result = await fetchDoubanList(params, 'https://cors-anywhere.com/');
-      break;
-    case 'custom':
-      result = await fetchDoubanList(params, proxyUrl);
-      break;
-    case 'direct':
-    default:
-      const response = await fetch(
-        `/api/douban?tag=${tag}&type=${type}&pageSize=${pageLimit}&pageStart=${pageStart}`
-      );
-      result = await response.json();
-      break;
+
+  // 🔄 请求去重：如果相同请求正在进行中，复用该请求
+  const pendingKey = `list-${cacheKey}`;
+  if (pendingRequests.has(pendingKey)) {
+    console.log(`豆瓣列表请求去重: ${type}/${tag}/${pageStart}`);
+    return pendingRequests.get(pendingKey)!;
   }
-  
-  // 保存到缓存
-  if (result.code === 200) {
-    await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.lists);
-    console.log(`豆瓣列表已缓存: ${type}/${tag}/${pageStart}`);
-  }
-  
-  return result;
+
+  // 创建新请求
+  const requestPromise = (async () => {
+    // 🕐 超时保护：30秒后自动清理，防止请求卡住
+    const timeoutId = setTimeout(() => {
+      pendingRequests.delete(pendingKey);
+      console.warn(`豆瓣列表请求超时: ${type}/${tag}/${pageStart}`);
+    }, 30000);
+
+    try {
+      const { proxyType, proxyUrl } = getDoubanProxyConfig();
+      let result: DoubanResult;
+
+      switch (proxyType) {
+        case 'cors-proxy-zwei':
+          result = await fetchDoubanList(params, 'https://ciao-cors.is-an.org/');
+          break;
+        case 'cmliussss-cdn-tencent':
+          result = await fetchDoubanList(params, '', true, false);
+          break;
+        case 'cmliussss-cdn-ali':
+          result = await fetchDoubanList(params, '', false, true);
+          break;
+        case 'cors-anywhere':
+          result = await fetchDoubanList(params, 'https://cors-anywhere.com/');
+          break;
+        case 'custom':
+          result = await fetchDoubanList(params, proxyUrl);
+          break;
+        case 'direct':
+        default:
+          const response = await fetch(
+            `/api/douban?tag=${tag}&type=${type}&pageSize=${pageLimit}&pageStart=${pageStart}`
+          );
+          result = await response.json();
+          break;
+      }
+
+      // 保存到缓存
+      if (result.code === 200) {
+        await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.lists);
+        console.log(`豆瓣列表已缓存: ${type}/${tag}/${pageStart}`);
+      }
+
+      clearTimeout(timeoutId);
+      return result;
+    } finally {
+      clearTimeout(timeoutId);
+      // 请求完成后，从 pending 中移除
+      pendingRequests.delete(pendingKey);
+    }
+  })();
+
+  // 将请求存入 pending Map
+  pendingRequests.set(pendingKey, requestPromise);
+
+  return requestPromise;
 }
 
 export async function fetchDoubanList(
@@ -563,19 +636,34 @@ export async function getDoubanRecommends(
     platform,
     sort,
   } = params;
-  
+
   // 检查缓存
-  const cacheKey = getCacheKey('recommends', { 
-    kind, pageLimit, pageStart, category, format, label, region, year, platform, sort 
+  const cacheKey = getCacheKey('recommends', {
+    kind, pageLimit, pageStart, category, format, label, region, year, platform, sort
   });
   const cached = await getCache(cacheKey);
   if (cached) {
     console.log(`豆瓣推荐缓存命中: ${kind}/${category || 'all'}`);
     return cached;
   }
-  
-  const { proxyType, proxyUrl } = getDoubanProxyConfig();
-  let result: DoubanResult;
+
+  // 🔄 请求去重
+  const pendingKey = `recommends-${cacheKey}`;
+  if (pendingRequests.has(pendingKey)) {
+    console.log(`豆瓣推荐请求去重: ${kind}/${category || 'all'}`);
+    return pendingRequests.get(pendingKey)!;
+  }
+
+  const requestPromise = (async () => {
+    // 🕐 超时保护：30秒后自动清理
+    const timeoutId = setTimeout(() => {
+      pendingRequests.delete(pendingKey);
+      console.warn(`豆瓣推荐请求超时: ${kind}/${category || 'all'}`);
+    }, 30000);
+
+    try {
+      const { proxyType, proxyUrl } = getDoubanProxyConfig();
+      let result: DoubanResult;
   
   switch (proxyType) {
     case 'cors-proxy-zwei':
@@ -601,14 +689,23 @@ export async function getDoubanRecommends(
       result = await response.json();
       break;
   }
-  
+
   // 保存到缓存
   if (result.code === 200) {
     await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.recommends);
     console.log(`豆瓣推荐已缓存: ${kind}/${category || 'all'}`);
   }
-  
+
+  clearTimeout(timeoutId);
   return result;
+} finally {
+  clearTimeout(timeoutId);
+  pendingRequests.delete(pendingKey);
+}
+})();
+
+  pendingRequests.set(pendingKey, requestPromise);
+  return requestPromise;
 }
 
 /**
@@ -633,35 +730,48 @@ export async function getDoubanDetails(id: string): Promise<{
     episode_length?: number;
     first_aired?: string;
     plot_summary?: string;
+    backdrop?: string;
+    trailerUrl?: string;
   };
 }> {
-  // 检查缓存 - 如果缓存中没有plot_summary则重新获取
-  const cacheKey = getCacheKey('details', { id });
-  const cached = await getCache(cacheKey);
-  if (cached && cached.data?.plot_summary) {
-    console.log(`豆瓣详情缓存命中(有简介): ${id}`);
-    return cached;
+  // 🔍 调试模式：检查localStorage标志
+  const isDebugMode = typeof window !== 'undefined' && localStorage.getItem('DOUBAN_DEBUG') === '1';
+
+  if (isDebugMode) {
+    console.log(`[Debug Mode] 跳过缓存，直接请求: ${id}`);
+  } else {
+    // 检查缓存 - 如果缓存中没有plot_summary则重新获取
+    const cacheKey = getCacheKey('details', { id });
+    const cached = await getCache(cacheKey);
+    if (cached && cached.data?.plot_summary) {
+      console.log(`豆瓣详情缓存命中(有简介): ${id}`);
+      return cached;
+    }
+    if (cached && !cached.data?.plot_summary) {
+      console.log(`豆瓣详情缓存无效(缺少简介): ${id}，重新获取`);
+      // 缓存无效，继续执行下面的逻辑重新获取
+    }
   }
-  if (cached && !cached.data?.plot_summary) {
-    console.log(`豆瓣详情缓存无效(缺少简介): ${id}，重新获取`);
-    // 缓存无效，继续执行下面的逻辑重新获取
-  }
-  
+
   try {
-    const response = await fetch(`/api/douban/details?id=${id}`);
-    
+    const noCacheParam = isDebugMode ? '&nocache=1' : '';
+    const response = await fetch(`/api/douban/details?id=${id}${noCacheParam}`);
+
     if (!response.ok) {
       throw new Error(`HTTP error! Status: ${response.status}`);
     }
-    
+
     const result = await response.json();
-    
-    // 保存到缓存
-    if (result.code === 200) {
+
+    // 🎯 只缓存有效数据（必须有 title）
+    if (result.code === 200 && result.data?.title && !isDebugMode) {
+      const cacheKey = getCacheKey('details', { id });
       await setCache(cacheKey, result, DOUBAN_CACHE_EXPIRE.details);
       console.log(`豆瓣详情已缓存: ${id}`);
+    } else if (result.code === 200 && !result.data?.title) {
+      console.warn(`⚠️ 豆瓣详情数据无效（缺少标题），不缓存: ${id}`);
     }
-    
+
     return result;
   } catch (error) {
     return {
@@ -812,7 +922,7 @@ export async function getDoubanActorMovies(
 
     const response = await fetch(searchUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'User-Agent': DEFAULT_USER_AGENT,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
         'Referer': 'https://www.douban.com/',
