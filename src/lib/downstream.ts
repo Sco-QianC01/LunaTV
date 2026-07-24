@@ -11,6 +11,28 @@ import stcasc, { ChineseType } from 'switch-chinese';
 // 创建模块级别的繁简转换器实例
 const converter = stcasc();
 
+// 部分源同时提供分享落地页（HTML）和真实的媒体直链，两组集数长度往往相同，
+// 必须优先选带媒体扩展名的分组，否则可能选中无法播放的 HTML 分享页
+const MEDIA_URL_PATTERN = /\.(m3u8|mp4|flv|ts)(\?|#|$)/i;
+
+function isMediaUrlGroup(urls: string[]): boolean {
+  return urls.some((url) => MEDIA_URL_PATTERN.test(url));
+}
+
+// 综合媒体链接优先级和集数长度，判断新分组是否应替换当前分组
+function isBetterEpisodeGroup(
+  candidateUrls: string[],
+  currentUrls: string[]
+): boolean {
+  const candidateIsMedia = isMediaUrlGroup(candidateUrls);
+  const currentIsMedia = isMediaUrlGroup(currentUrls);
+
+  if (candidateIsMedia !== currentIsMedia) {
+    return candidateIsMedia;
+  }
+  return candidateUrls.length > currentUrls.length;
+}
+
 interface ApiSearchItem {
   vod_id: string;
   vod_name: string;
@@ -92,21 +114,21 @@ async function searchWithCache(
             const episode_title_url = title_url.split('$');
             if (
               episode_title_url.length === 2 &&
-              episode_title_url[1].endsWith('.m3u8')
+              /^https?:\/\//i.test(episode_title_url[1].trim())
             ) {
               // 标准格式：第1集$https://xxx.m3u8
               matchTitles.push(episode_title_url[0]);
               matchEpisodes.push(episode_title_url[1]);
             } else if (
               episode_title_url.length === 1 &&
-              episode_title_url[0].endsWith('.m3u8')
+              /^https?:\/\//i.test(episode_title_url[0].trim())
             ) {
               // 纯链接格式：https://xxx.m3u8（无标题信息）
               matchTitles.push(`第${matchEpisodes.length + 1}集`);
               matchEpisodes.push(episode_title_url[0]);
             }
           });
-          if (matchEpisodes.length > episodes.length) {
+          if (isBetterEpisodeGroup(matchEpisodes, episodes)) {
             episodes = matchEpisodes;
             titles = matchTitles;
           }
@@ -532,13 +554,13 @@ export async function getDetailFromApi(
         const episode_title_url = title_url.split('$');
         if (
           episode_title_url.length === 2 &&
-          episode_title_url[1].endsWith('.m3u8')
+          /^https?:\/\//i.test(episode_title_url[1].trim())
         ) {
           matchTitles.push(episode_title_url[0]);
           matchEpisodes.push(episode_title_url[1]);
         }
       });
-      if (matchEpisodes.length > episodes.length) {
+      if (isBetterEpisodeGroup(matchEpisodes, episodes)) {
         episodes = matchEpisodes;
         titles = matchTitles;
       }
